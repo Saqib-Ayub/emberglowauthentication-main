@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import signup, login, forgot_password, reset_password, logout, google_login, onboarding, google_oauth_test, generate_oauth_url
+from .views import signup, login, forgot_password, reset_password, logout, google_login, onboarding, google_oauth_test, generate_oauth_url,VerifyEmailView, ResendActivationEmailView
 
 urlpatterns = [
     path('signup/', signup, name='signup'),
@@ -11,4 +11,8 @@ urlpatterns = [
     path('google-login/', google_login, name='google-login'),
     path('google-test/', google_oauth_test, name='google-test'),  # Test endpoint
     path('oauth-url/', generate_oauth_url, name='oauth-url'),  # Generate fresh OAuth URL
+    path('verify-email/<uidb64>/<token>/', VerifyEmailView.as_view(), name='verify-email'),
+    path('resend-activation/', ResendActivationEmailView.as_view(), name='resend-activation'),
+
+
 ]

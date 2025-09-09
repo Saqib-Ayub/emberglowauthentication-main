@@ -25,7 +25,8 @@ SECRET_KEY = 'django-insecure-##$$^$@488s6o9n=%n15=#p_e3-+@bpm+b(o^s3_)$tu18ii0w
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
+
 
 
 # Application definition
@@ -146,22 +147,16 @@ SIMPLE_JWT = {
     'BLACKLIST_TOKEN_CHECKS': ['access', 'refresh'],
 }
 
+# Turn off debug for production emails
+DEBUG = False
 
-
-if DEBUG:
-    # 📌 Development mode → print emails in terminal
-    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-    DEFAULT_FROM_EMAIL = "saqibayub377@example.com"
-else:
-    # 📌 Production mode → send real emails using Gmail
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = 'smtp.gmail.com'
-    EMAIL_PORT = 587
-    EMAIL_USE_TLS = True
-    EMAIL_HOST_USER = 'yourgmail@gmail.com'
-    EMAIL_HOST_PASSWORD = 'toyhwghasfusyxjb'  # App Password from Google
-    DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
-
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'saqibayub377@gmail.com'  # ✅ your Gmail address
+EMAIL_HOST_PASSWORD = 'toyhwghasfusyxjb'  # ✅ your 16-digit App Password
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 # settings.py
 
@@ -178,3 +173,7 @@ SOCIALACCOUNT_PROVIDERS = {
         }
     }
 }
+
+
+SITE_URL = "http://127.0.0.1:8000"   # or your deployed base URL
+PROJECT_NAME = "EmberGlow"

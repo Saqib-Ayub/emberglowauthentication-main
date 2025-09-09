@@ -15,65 +15,101 @@ from django.conf import settings
 from .serializers import UserSerializer, LoginSerializer, ForgotPasswordSerializer, ResetPasswordSerializer
 from rest_framework import status
 
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.urls import reverse
+from django.core.mail import send_mail
+from django.conf import settings
+from django.views import View
+from django.http import JsonResponse
+from django.contrib.auth import get_user_model
+from django.db.models import Q
+
 User = get_user_model()
 
-# Signup View
 @api_view(['POST'])
-@permission_classes([AllowAny])  # Allow any user to access this view
+@permission_classes([AllowAny])
 def signup(request):
-    if request.method == 'POST':
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()  # Create user in the database
-            refresh = RefreshToken.for_user(user)  # Generate JWT tokens
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    serializer = UserSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.save()
+        # Do NOT allow login yet
+        user.is_active = False
+        user.save(update_fields=["is_active"])
 
-# Login View
+        # Build verification link
+        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        activation_link = f"{settings.SITE_URL}/api/auth/verify-email/{uidb64}/{token}/"
+
+        subject = f"Verify your {getattr(settings, 'PROJECT_NAME', 'App')} account"
+        message = (
+            f"Hi {user.get_username()},\n\n"
+            f"Please verify your email to activate your account:\n{activation_link}\n\n"
+            f"If you didn’t sign up, you can ignore this email."
+        )
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+
+        return Response(
+            {"detail": "Signup successful. Check your email to verify your account."},
+            status=status.HTTP_201_CREATED
+        )
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login(request):
     email = request.data.get("email")
     password = request.data.get("password")
 
-    user = authenticate(request, email=email, password=password)
-    if user is not None:
-        refresh = RefreshToken.for_user(user)
-        return Response({
-            "refresh": str(refresh),
-            "access": str(refresh.access_token)
-        }, status=status.HTTP_200_OK)
-    else:
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
         return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
-# Forgot Password View (Send Reset Link)
+    if not user.is_active:
+        return Response({"detail": "Your email is not verified. Please check your inbox and verify before logging in."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if not user.check_password(password):
+        return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Passed all checks → return tokens
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        "refresh": str(refresh),
+        "access": str(refresh.access_token)
+    }, status=status.HTTP_200_OK)
+
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def forgot_password(request):
-    if request.method == 'POST':
-        serializer = ForgotPasswordSerializer(data=request.data)
-        if serializer.is_valid():
-            email = serializer.validated_data['email']
-            user = User.objects.filter(email=email).first()
-            if user:
-                # Generate password reset token
-                token = default_token_generator.make_token(user)
-                reset_link = f"http://localhost:8000/reset-password/{user.id}/{token}/"
-
-                # Send reset link email
-                send_mail(
-                    'Password Reset Request',
-                    f'Click the following link to reset your password: {reset_link}',
-                    settings.DEFAULT_FROM_EMAIL,
-                    [email],
-                    fail_silently=False,
-                )
-                return Response({'detail': 'Password reset link sent to your email.'}, status=status.HTTP_200_OK)
-            return Response({'detail': 'No account found with this email.'}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = ForgotPasswordSerializer(data=request.data)
+    if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    email = serializer.validated_data['email']
+    user = User.objects.filter(email=email).first()
+    if not user:
+        return Response({'detail': 'No account found with this email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    reset_link = f"{settings.SITE_URL}/api/auth/reset-password/{uidb64}/{token}/"
+
+    send_mail(
+        'Password Reset Request',
+        f'Click the following link to reset your password: {reset_link}',
+        settings.DEFAULT_FROM_EMAIL,
+        [email],
+        fail_silently=False,
+    )
+    return Response({'detail': 'Password reset link sent to your email.'}, status=status.HTTP_200_OK)
+
 
 # Reset Password View (Update Password)
 @api_view(["POST"])
@@ -410,4 +446,67 @@ def onboarding(request):
     else:
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+
+
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
+from django.utils.timezone import now
+from datetime import timedelta
+
+class VerifyEmailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, uidb64, token):
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+            return Response({"ok": False, "message": "Invalid activation link."}, status=400)
+
+        if user.is_active:
+            return Response({"ok": True, "message": "Account already verified."})
+
+        # Optional: Check expiry manually (24 hours)
+        token_age_limit = timedelta(hours=24)
+        if user.date_joined < now() - token_age_limit:
+            return Response({"ok": False, "message": "Token expired. Please request a new one."}, status=400)
+
+        if default_token_generator.check_token(user, token):
+            user.is_active = True
+            user.save(update_fields=["is_active"])
+            return Response({"ok": True, "message": "Email verified. You can now log in."})
+
+        return Response({"ok": False, "message": "Invalid or expired token."}, status=400)
+
+
+class ResendActivationEmailView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get("email", "").strip().lower()
+        if not email:
+            return Response({"ok": False, "message": "Email is required."}, status=400)
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return Response({"ok": True, "message": "If the email exists, a verification link has been sent."})
+
+        if user.is_active:
+            return Response({"ok": True, "message": "Account already verified."})
+
+        uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        activation_link = f"{settings.SITE_URL}/api/auth/verify-email/{uidb64}/{token}/"
+
+        subject = f"Verify your {getattr(settings, 'PROJECT_NAME', 'App')} account"
+        message = (
+            f"Hi {user.get_username()},\n\n"
+            f"Please verify your email:\n{activation_link}\n\n"
+            f"This link will expire in 24 hours."
+        )
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+
+        return Response({"ok": True, "message": "Verification email sent."})
 
